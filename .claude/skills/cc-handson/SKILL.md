@@ -1,66 +1,114 @@
 ---
 name: cc-handson
-description: Claude Code公式ドキュメントと関連記事からハンズオン形式の習得用Markdownを生成する。トピックを引数で指定（例：skills, mcp, hooks, subagents, plugins）。コピペで実行できるコマンド・手順・トラブルシューティング・参照リンクを必ず含める。
+description: Claude Code公式ドキュメントと関連記事からハンズオン形式の習得用Markdownを生成する。既存ファイルがあれば差分判定し、内容に実質的な変更がない場合は再生成しない。トピックを引数で指定（例：skills, mcp, hooks）。
 argument-hint: [topic]
 context: fork
 agent: general-purpose
-allowed-tools: WebFetch Read Write Bash(mkdir *) Bash(date *) Bash(curl *)
+allowed-tools: WebFetch Read Write Bash(mkdir *) Bash(date *) Bash(curl *) Bash(ls *) Bash(sha256sum *) Bash(test *)
 ---
 
-# Claude Code ハンズオン生成
+# Claude Code ハンズオン生成（差分対応版）
 
-ユーザーが指定したトピック `$ARGUMENTS` について、Claude Codeを習得するためのハンズオンMarkdownを生成する。
+ユーザーが指定したトピック `$ARGUMENTS` について、ハンズオンMarkdownを**冪等に**生成する。
 
 ## 実行時に取得する最新コンテキスト
 
-### 公式ドキュメント全INDEX（最新）
+### 公式ドキュメント全INDEX
 
 !`curl -s https://code.claude.com/docs/llms.txt | head -200`
+
+### 既存ファイルの有無
+
+!`test -f ./handson/cc-handson-$ARGUMENTS.md && echo "EXISTS" || echo "NEW"`
+
+### 既存ファイルのソースハッシュ（あれば）
+
+!`grep -E "^source_hash:" ./handson/cc-handson-$ARGUMENTS.md 2>/dev/null || echo "source_hash: none"`
 
 ### 生成日
 
 !`date +%Y-%m-%d`
 
+## 出力先（固定・日付なし）
+
+`./handson/cc-handson-$ARGUMENTS.md`
+
+**ファイル名に日付は入れない**。日付は frontmatter の `last_updated` で管理する。
+
 ## 手順
 
-### 1. トピックに対応するURLを決定
+### 1. 既存ファイルの読み込み
 
-上記の `llms.txt` から `$ARGUMENTS` に関連するページのURLを抽出する。
-同時に `${CLAUDE_SKILL_DIR}/references/sources.md` を Read して、補強用の日本語記事URLも取得する。
+上の "EXISTS" 判定が `EXISTS` の場合、`./handson/cc-handson-$ARGUMENTS.md` を Read する。
+冒頭の frontmatter から以下を取得：
 
-### 2. 公式ドキュメントの取得（必須）
+- `last_updated`
+- `source_hash`
+- `source_urls`
 
-抽出したURL（`code.claude.com/docs/en/...`）を WebFetch で取得。最低でも以下を抽出：
+### 2. 公式ドキュメント＋関連記事の取得
 
-- 概要・できること
-- 最小構成のセットアップ手順
-- frontmatter / 設定項目のリファレンス
-- 公式コード例（そのまま動くもの）
-- トラブルシューティング
+`llms.txt` から該当URLを抽出し WebFetch。
+`${CLAUDE_SKILL_DIR}/references/sources.md` の関連記事も WebFetch。
 
-### 3. 関連記事の取得（補強）
+### 3. ソースハッシュの計算
 
-sources.md にある zenn / qiita / Anthropic engineering blog などから2〜3本を WebFetch。
-公式に書いていない**実戦的なTips**、**ハマりどころ**、**応用パターン**を拾う。
+取得した公式ドキュメント本文（HTMLタグ・ナビゲーション・フッターを除いた本文のみ）を連結し、
+`sha256sum` で短縮ハッシュ（先頭12文字）を計算。
 
-### 4. テンプレートで整形
+これを `new_source_hash` とする。
 
-`${CLAUDE_SKILL_DIR}/references/output-template.md` を Read し、その構成に従って出力を組み立てる。
+### 4. 差分判定（重複防止の核心）
 
-### 5. 品質基準（必ず守る）
+| 既存ファイル | source_hash 比較 | アクション                               |
+| ------------ | ---------------- | ---------------------------------------- |
+| 無い (NEW)   | —                | **新規生成**                             |
+| 有る         | 既存 == new      | **スキップ**（"変更なし"を報告して終了） |
+| 有る         | 既存 != new      | **更新生成**（更新履歴を追記）           |
 
-- すべてのコマンド・コードは**そのままコピペで動く形**にする（プレースホルダは `<>` で明示）
-- 各セクション末尾に「✅ 確認ポイント」を入れる
-- セットアップは**最小→拡張**の順
-- 「やってみよう」演習を最低3つ含める（基礎/応用/実戦）
-- 参照リンクは末尾の「## 参照」セクションにURL付きで列挙
-- 公式情報と記事情報は明確に分ける
+スキップ時の出力例：
 
-### 6. ファイル出力
+> 📄 `cc-handson-skills.md` は既に最新です（前回更新: 2026-05-01）。公式ドキュメントに変更が検出されませんでした。
 
-出力先：`./handson/cc-handson-$ARGUMENTS-<日付>.md`
-Bash で `mkdir -p ./handson` した後、Write で保存する。
+### 5. 生成 or 更新
+
+**新規生成の場合**：
+`${CLAUDE_SKILL_DIR}/references/output-template.md` のテンプレでフル生成。
+frontmatter に以下を必ず含める：
+
+## \`\`\`yaml
+
+title: "Claude Code ハンズオン：<topic>"
+topic: <topic>
+last_updated: <今日の日付>
+source_hash: <new_source_hash>
+source_urls:
+
+- <fetchしたURL1>
+- <fetchしたURL2>
+  revision: 1
+
+---
+
+\`\`\`
+
+**更新生成の場合**：
+
+- 本文を最新内容で書き直す
+- `last_updated` を更新
+- `source_hash` を `new_source_hash` に更新
+- `revision` を +1
+- 本文末尾の `## 更新履歴` セクションに1行追記：
+  `- YYYY-MM-DD: 公式ドキュメントの変更を反映（revision N→N+1）。主な変更点：<差分の要約3点>`
+
+### 6. 品質基準（前回と同じ）
+
+- コピペで動くコマンド
+- 各セクションに ✅ 確認ポイント
+- 演習3つ（基礎/応用/実戦）
+- 参照リンクを末尾に列挙
+- 公式と記事情報を分離
 
 ## 出力後
 
-生成したファイルのパスを伝え、冒頭サマリ（3行）を表示して終了。
+ファイルパス、アクション種別（NEW / UPDATED / SKIPPED）、source_hash、revision を表示して終了。
